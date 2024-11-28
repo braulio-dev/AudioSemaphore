@@ -32,10 +32,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define pi 3.14155926
-#define MAX_SAMPLES 10
-#define res_8b 256
-#define res_12b 4096
 #define threshold_worst 90
 #define threshold_bad 80
 /* USER CODE END PD */
@@ -56,9 +52,9 @@ UART_HandleTypeDef huart3;
 
 osThreadId decibelMeterTasHandle;
 osThreadId semaphoreTaskHandle;
+osThreadId speakerTaskHandle;
 /* USER CODE BEGIN PV */
 uint8_t decibels;
-uint32_t sine_val[MAX_SAMPLES];
 
 /* USER CODE END PV */
 
@@ -72,6 +68,7 @@ static void MX_I2C2_Init(void);
 static void MX_USART3_UART_Init(void);
 void decibelMeterHook(void const * argument);
 void semaphoreHook(void const * argument);
+void speakerHook(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -79,11 +76,6 @@ void semaphoreHook(void const * argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void get_sineval() {
-	for (int i = 0; i < MAX_SAMPLES; i++) {
-		sine_val[i] = ((sin(i * 2 * pi / MAX_SAMPLES) + 1)) * res_12b / 2;
-	}
-}
 /* USER CODE END 0 */
 
 /**
@@ -123,9 +115,6 @@ int main(void)
   MX_I2C2_Init();
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
-//  get_sineval();
-//  HAL_TIM_Base_Start(&htim6);
-//  HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, &sine_val, MAX_SAMPLES, DAC_ALIGN_12B_R);
   HAL_DAC_Start(&hdac, DAC1_CHANNEL_1);
   for (uint8_t addr = 0; addr < 128; addr++) {
       if (HAL_I2C_IsDeviceReady(&hi2c2, addr << 1, 1, HAL_MAX_DELAY) == HAL_OK) {
@@ -165,6 +154,10 @@ int main(void)
   /* definition and creation of semaphoreTask */
   osThreadDef(semaphoreTask, semaphoreHook, osPriorityHigh, 0, 128);
   semaphoreTaskHandle = osThreadCreate(osThread(semaphoreTask), NULL);
+
+  /* definition and creation of speakerTask */
+  osThreadDef(speakerTask, speakerHook, osPriorityRealtime, 0, 128);
+  speakerTaskHandle = osThreadCreate(osThread(speakerTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -451,7 +444,7 @@ void decibelMeterHook(void const * argument)
 void semaphoreHook(void const * argument)
 {
   /* USER CODE BEGIN semaphoreHook */
-  TickType_t ticks = pdMS_TO_TICKS(1);
+  TickType_t ticks = pdMS_TO_TICKS(2);
   /* Infinite loop */
   for(;;)
   {
@@ -468,6 +461,33 @@ void semaphoreHook(void const * argument)
 	  vTaskDelay(ticks);
   }
   /* USER CODE END semaphoreHook */
+}
+
+/* USER CODE BEGIN Header_speakerHook */
+/**
+* @brief Function implementing the speakerTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_speakerHook */
+void speakerHook(void const * argument)
+{
+  /* USER CODE BEGIN speakerHook */
+  TickType_t ticks = pdMS_TO_TICKS(1);
+  TickType_t wait = pdMS_TO_TICKS(100);
+
+  /* Infinite loop */
+  for(;;) {
+      if (decibels >= threshold_worst) {
+          HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 0);
+          vTaskDelay(ticks);
+          HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, (uint32_t) 50);
+          vTaskDelay(ticks);
+      } else {
+    	  vTaskDelay(wait);
+      }
+  }
+  /* USER CODE END speakerHook */
 }
 
  /* MPU Configuration */
