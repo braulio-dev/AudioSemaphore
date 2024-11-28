@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -31,7 +32,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define pi 3.14155926
+#define MAX_SAMPLES 10
+#define res_8b 256
+#define res_12b 4096
+#define threshold_worst 90
+#define threshold_bad 80
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -42,23 +48,42 @@
 /* Private variables ---------------------------------------------------------*/
 
 DAC_HandleTypeDef hdac;
+DMA_HandleTypeDef hdma_dac1;
 
+I2C_HandleTypeDef hi2c2;
+
+UART_HandleTypeDef huart3;
+
+osThreadId decibelMeterTasHandle;
+osThreadId semaphoreTaskHandle;
 /* USER CODE BEGIN PV */
-double dac_value=0;
+uint8_t decibels;
+uint32_t sine_val[MAX_SAMPLES];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MPU_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_DAC_Init(void);
+static void MX_I2C2_Init(void);
+static void MX_USART3_UART_Init(void);
+void decibelMeterHook(void const * argument);
+void semaphoreHook(void const * argument);
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+void get_sineval() {
+	for (int i = 0; i < MAX_SAMPLES; i++) {
+		sine_val[i] = ((sin(i * 2 * pi / MAX_SAMPLES) + 1)) * res_12b / 2;
+	}
+}
 /* USER CODE END 0 */
 
 /**
@@ -93,10 +118,62 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_DAC_Init();
+  MX_I2C2_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
-  HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
+//  get_sineval();
+//  HAL_TIM_Base_Start(&htim6);
+//  HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, &sine_val, MAX_SAMPLES, DAC_ALIGN_12B_R);
+  HAL_DAC_Start(&hdac, DAC1_CHANNEL_1);
+  for (uint8_t addr = 0; addr < 128; addr++) {
+      if (HAL_I2C_IsDeviceReady(&hi2c2, addr << 1, 1, HAL_MAX_DELAY) == HAL_OK) {
+          char msg[30];
+          sprintf(msg, "Device found at 0x%02X\r\n", addr);
+          HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+          break;
+      }
+  }
+
+  char start_msg[] = "Listening for audio\r\n";
+  HAL_UART_Transmit(&huart3, (uint8_t *)start_msg, strlen(start_msg), HAL_MAX_DELAY);
+
   /* USER CODE END 2 */
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* definition and creation of decibelMeterTas */
+  osThreadDef(decibelMeterTas, decibelMeterHook, osPriorityHigh, 0, 128);
+  decibelMeterTasHandle = osThreadCreate(osThread(decibelMeterTas), NULL);
+
+  /* definition and creation of semaphoreTask */
+  osThreadDef(semaphoreTask, semaphoreHook, osPriorityHigh, 0, 128);
+  semaphoreTaskHandle = osThreadCreate(osThread(semaphoreTask), NULL);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -105,16 +182,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 0);
-//	  if (dac_value < 200) {
-//	  	dac_value++;
-//	  } else {
-//	  	dac_value=0;
-//	  }
-	  dac_value++;
-	  HAL_Delay(1);
-	  HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, (uint32_t) (sin(dac_value / 50) * 50.0f) + 50);
-	  HAL_Delay(1);
   }
   /* USER CODE END 3 */
 }
@@ -139,7 +206,13 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 96;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV6;
+  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLR = 2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -149,12 +222,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -201,17 +274,129 @@ static void MX_DAC_Init(void)
 }
 
 /**
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.Timing = 0x2000090E;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
+
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
 /* USER CODE BEGIN MX_GPIO_Init_1 */
 /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, Green_LED_Pin|Yellow_LED_Pin|Red_LED_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : Green_LED_Pin Yellow_LED_Pin Red_LED_Pin */
+  GPIO_InitStruct.Pin = Green_LED_Pin|Yellow_LED_Pin|Red_LED_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
@@ -220,6 +405,70 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_decibelMeterHook */
+/**
+  * @brief  Function implementing the decibelMeterTas thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_decibelMeterHook */
+void decibelMeterHook(void const * argument)
+{
+  /* USER CODE BEGIN 5 */
+  TickType_t ticks = pdMS_TO_TICKS(400);
+
+  /* Infinite loop */
+  for(;;)
+  {
+	vTaskDelay(ticks);
+	if (HAL_I2C_Mem_Write(&hi2c2, 0x91, 0x0A, I2C_MEMADD_SIZE_8BIT, 0x0A, 1, HAL_MAX_DELAY) != HAL_OK) {
+	  char error_msg[] = "I2C Mem Write Error\r\n";
+	  HAL_UART_Transmit(&huart3, (uint8_t *)error_msg, strlen(error_msg), HAL_MAX_DELAY);
+	  continue;
+	}
+
+	if (HAL_I2C_Mem_Read(&hi2c2, 0x91, 0x0A, I2C_MEMADD_SIZE_8BIT, &decibels, 1, HAL_MAX_DELAY) != HAL_OK) {
+	  char error_msg[] = "I2C Mem Read Error\r\n";
+	  HAL_UART_Transmit(&huart3, (uint8_t *)error_msg, strlen(error_msg), HAL_MAX_DELAY);
+	  continue;
+	}
+
+	char msg[20];
+	sprintf(msg, "Sound level: %d dB\r\n", decibels);
+	HAL_UART_Transmit(&huart3, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+  }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_semaphoreHook */
+/**
+* @brief Function implementing the semaphoreTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_semaphoreHook */
+void semaphoreHook(void const * argument)
+{
+  /* USER CODE BEGIN semaphoreHook */
+  TickType_t ticks = pdMS_TO_TICKS(1);
+  /* Infinite loop */
+  for(;;)
+  {
+	  HAL_GPIO_WritePin(Green_LED_GPIO_Port, Green_LED_Pin | Red_LED_Pin | Yellow_LED_Pin, GPIO_PIN_RESET);
+	  if (decibels >= threshold_worst) {
+		  HAL_GPIO_WritePin(Red_LED_GPIO_Port, Red_LED_Pin, GPIO_PIN_SET);
+	  } else if (decibels >= threshold_bad) {
+		  HAL_GPIO_WritePin(Yellow_LED_GPIO_Port, Yellow_LED_Pin, GPIO_PIN_SET);
+	  } else {
+		  HAL_GPIO_WritePin(Green_LED_GPIO_Port, Green_LED_Pin, GPIO_PIN_SET);
+	  }
+
+
+	  vTaskDelay(ticks);
+  }
+  /* USER CODE END semaphoreHook */
+}
 
  /* MPU Configuration */
 
